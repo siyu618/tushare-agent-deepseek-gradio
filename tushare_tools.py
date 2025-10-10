@@ -75,6 +75,7 @@ def get_stock_match_days(ts_code: str, start_date: str, end_date: str, freq = 'D
     获取符合策略的股票匹配日期
     结合了获取股票数据、生成统计信息列表以及策略匹配的步骤
     """
+    print("invoked ... get_stock_match_days ")
     # 获取数据
     df = get_stock_data(ts_code, start_date, end_date, freq, ma)
     # print(df.info)

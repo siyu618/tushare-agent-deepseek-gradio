@@ -35,5 +35,6 @@ class DeepSeekClient:
         payload = {"model": "deepseek-chat", "messages": messages}
         resp = requests.post(self.url, headers=headers, json=payload, timeout=60)
         print(headers, payload)
-        print("resp = ", resp)
+        print("resp.text = ", resp.text)
+        print("""resp.json()["choices"][0]["message"]["content"]""", resp.json()["choices"][0]["message"]["content"])
         return resp.json()["choices"][0]["message"]["content"]

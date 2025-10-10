@@ -58,7 +58,7 @@ class TushareAgent:
         func_name = decision.get("function")
         params = decision.get("params", {})
         reasoning = decision.get("reasoning", "")
-
+        print("get choice")
         if func_name not in SAFE_FUNCTIONS:
             return {
                 "error": f"Unsafe or unknown function '{func_name}'",
@@ -66,7 +66,9 @@ class TushareAgent:
             }
 
         try:
+            print("=== invoke:", func_name)
             result = SAFE_FUNCTIONS[func_name](**params)
+            print("=== result", result)
         except Exception as e:
             result = f"❌ Error while executing {func_name}: {e}"
 
