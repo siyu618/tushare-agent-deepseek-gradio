@@ -1,0 +1,6 @@
+gradio
+pandas
+tushare
+matplotlib
+requests
+python-dotenv
