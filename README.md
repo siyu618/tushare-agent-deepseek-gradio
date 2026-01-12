@@ -1,5 +1,4 @@
 # tushare-agent-deepseek-gradio
-
 An intelligent stock data analysis agent based on **Tushare** and **DeepSeek**, with an interactive interface built using **Gradio**. Supports natural language queries and strategy-based stock analysis.
 
 ---
