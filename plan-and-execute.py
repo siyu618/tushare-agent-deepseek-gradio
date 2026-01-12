@@ -99,7 +99,9 @@ app = workflow.compile()
 
 # --- 5. 测试运行 ---
 async def main():
-    config = {"recursion_limit": 20}
+    config = {"recursion_limit": 20,
+              "run_name": "BTC_GT_Parallel_Test_001" # 在 LangSmith 中显示的名称
+              }
     inputs = {"input": "帮我查一下 BTC_USDT 和 GT_USDT 的价格", "past_steps": []}
     async for event in app.astream(inputs, config):
         print(event)
