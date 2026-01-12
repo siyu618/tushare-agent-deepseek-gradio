@@ -3,15 +3,40 @@ import operator
 from typing import List, TypedDict, Annotated
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage
+# from langchain_core.messages import HumanMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END
+from langchain.callbacks.base import AsyncCallbackHandler
 
+class UsageCallback(AsyncCallbackHandler):
+    async def on_llm_end(self, response, **kwargs):
+        usage = response.llm_output.get("token_usage", {})
+        print("[callback]", usage)
 
 from dotenv import load_dotenv
 import os
 load_dotenv()
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
+
+
+def log_llm_usage(tag: str, response):
+    metadata = getattr(response, "response_metadata", {}) or {}
+    usage = metadata.get("token_usage", {}) or {}
+
+    prompt_tokens = usage.get("prompt_tokens")
+    completion_tokens = usage.get("completion_tokens")
+    total_tokens = usage.get("total_tokens")
+    cache_hit = usage.get("prompt_cache_hit_tokens")
+
+    print(
+        f"[{tag}] "
+        f"prompt={prompt_tokens}, "
+        f"completion={completion_tokens}, "
+        f"total={total_tokens}, "
+        f"cache_hit={cache_hit}"
+    )
+
 
 # --- 1. 定义状态和数据结构 ---
 
@@ -26,7 +51,10 @@ class PlanExecuteState(TypedDict):
     response: str
 
 # --- 2. 配置模型与工具 ---
-llm = ChatOpenAI(model='deepseek-chat', openai_api_key=DEEPSEEK_API_KEY, openai_api_base='https://api.deepseek.com')
+llm = ChatOpenAI(model='deepseek-chat',
+                 openai_api_key=DEEPSEEK_API_KEY,
+                 openai_api_base='https://api.deepseek.com',
+                 callbacks=[UsageCallback()],)
 
 @tool
 async def get_market_data(pair: str):
@@ -37,25 +65,34 @@ async def get_market_data(pair: str):
     return f"{pair}: {price} USDT"
 
 # --- 3. 节点逻辑 ---
+# --- 定义静态的 System Prompt ---
+PLANNER_SYSTEM_PROMPT = """你是一个专业的金融任务规划专家。
+你的职责是根据用户需求拆解执行计划。
 
+规则（请严格遵守以触发缓存）：
+1. 识别所有需要查询的资产（如 BTC_USDT, GT_USDT）。
+2. 将互不依赖的任务放在同一个子列表中进行【并行执行】。
+3. 即使只有一个任务，也请嵌套在两层列表内，例如：[['BTC_USDT']]。
+4. 仅输出计划，不要有任何多余的解释。
+"""
+
+REPLANNER_SYSTEM_PROMPT = """你是一个任务总结专家。
+请根据提供的执行历史，为用户提供简洁、准确的最终回复。
+如果信息不全，请指出缺失的部分。
+"""
 async def planner(state: PlanExecuteState):
-    """计划者：负责任务拆解"""
-    # 核心修复点：强制使用 function_calling 模式
+    """计划者：利用前缀匹配触发 DeepSeek 缓存"""
     planner_llm = llm.with_structured_output(Plan, method="function_calling")
 
-    prompt = f"""你是一个任务规划专家。
-    针对用户需求：{state['input']}
-    请拆解执行计划。
-    
-    规则：
-    1. 如果多个查询任务（如查询不同币种价格）互不依赖，请将它们放在同一个子列表中，以便系统【并行】执行。
-    2. 结果必须符合 Plan 结构。
-    
-    示例：
-    用户说“查 BTC 和 GT”，你的计划应该是：[['BTC_USDT', 'GT_USDT']]
-    """
+    # 构造消息：SystemMessage 在前（静态），HumanMessage 在后（动态）
+    messages = [
+        SystemMessage(content=PLANNER_SYSTEM_PROMPT),
+        HumanMessage(content=f"用户需求：{state['input']}")
+    ]
 
-    response = await planner_llm.ainvoke(prompt)
+    response = await planner_llm.ainvoke(messages)
+    # ⭐ 关键：打印 prompt cache
+    # log_llm_usage("planner", response)
     return {"plan": response.steps}
 
 async def executor(state: PlanExecuteState):
@@ -70,13 +107,17 @@ async def executor(state: PlanExecuteState):
     return {"past_steps": [step_output], "plan": state["plan"][1:]}
 
 async def replanner(state: PlanExecuteState):
-    """再计划者：汇总或决定是否继续"""
+    """再计划者：同样遵循静态在前原则"""
     if not state["plan"]:
-        # 如果计划跑完了，进行最终总结
-        prompt = f"基于以下执行历史，给出最终回答：{state['past_steps']}"
-        response = await llm.ainvoke(prompt)
+        messages = [
+            SystemMessage(content=REPLANNER_SYSTEM_PROMPT),
+            HumanMessage(content=f"执行历史：{state['past_steps']}\n原始需求：{state['input']}")
+        ]
+        response = await llm.ainvoke(messages)
+        # ⭐ cache 打印
+        # log_llm_usage("replanner", response)
         return {"response": response.content}
-    return {} # 继续循环
+    return {}
 
 # --- 4. 构建图 ---
 
@@ -105,6 +146,16 @@ async def main():
     inputs = {"input": "帮我查一下 BTC_USDT 和 GT_USDT 的价格", "past_steps": []}
     async for event in app.astream(inputs, config):
         print(event)
+        for node_name, output in event.items():
+            # 尝试从消息中获取 usage 统计
+            if "messages" in output and output["messages"]:
+                last_msg = output["messages"][-1]
+                if hasattr(last_msg, 'response_metadata'):
+                    usage = last_msg.response_metadata.get("token_usage", {})
+                    # 关键字段：prompt_cache_hit_tokens
+                    cached_tokens = usage.get("prompt_cache_hit_tokens", 0)
+                    total_tokens = usage.get("total_tokens", 0)
+                    print(f"[{node_name}] 缓存命中: {cached_tokens} / 提示词总数: {usage.get('prompt_tokens')}")
 
 if __name__ == "__main__":
     asyncio.run(main())
